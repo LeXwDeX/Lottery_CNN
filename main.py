@@ -5,30 +5,30 @@ from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import Dense, Input
 from tensorflow.keras.callbacks import EarlyStopping
 from tensorflow.keras.optimizers import Adam
-from  .keras import TqdmCallback
+from tqdm.keras import TqdmCallback
 import openpyxl
 
 # ---------------------------
 # 参数设置
 # ---------------------------
-EPOCHS = 1000           # 训练轮数
-BATCH_SIZE = 10         # 批大小
-PATIENCE = 20           # EarlyStopping 的耐心值
+EPOCHS = 1000               # 训练轮数
+BATCH_SIZE = 10             # 批大小
+PATIENCE = 20               # EarlyStopping 的耐心值
 
 NUM_HIDDEN_LAYERS_RED = 3   # 红球模型中间隐藏层的数量
 NUM_HIDDEN_LAYERS_BLUE = 3  # 蓝球模型中间隐藏层的数量
 
 # 红球模型参数
-INPUT_DIM = 33          # 输入维度（经过one-hot编码后每个红球）
-RED_FIRST_UNITS = 128   # 第一隐藏层神经元数
-RED_HIDDEN_UNITS = 64   # 每个中间隐藏层神经元数
-RED_OUTPUT_DIM = 33     # 输出层神经元数
+INPUT_DIM = 33              # 输入维度（经过one-hot编码后每个红球）
+RED_FIRST_UNITS = 128       # 第一隐藏层神经元数
+RED_HIDDEN_UNITS = 64       # 每个中间隐藏层神经元数
+RED_OUTPUT_DIM = 33         # 输出层神经元数
 
 # 蓝球模型参数
-BLUE_INPUT_DIM = 1      # 蓝球输入维度
-BLUE_FIRST_UNITS = 128  # 第一层神经元数
-BLUE_HIDDEN_UNITS = 128 # 中间隐藏层神经元数
-BLUE_OUTPUT_DIM = 1     # 输出层
+BLUE_INPUT_DIM = 1          # 蓝球输入维度
+BLUE_FIRST_UNITS = 128      # 第一层神经元数
+BLUE_HIDDEN_UNITS = 128     # 中间隐藏层神经元数
+BLUE_OUTPUT_DIM = 1         # 输出层
 
 # 优化器设置（两模型统一采用相同学习率）
 LEARNING_RATE = 0.001
