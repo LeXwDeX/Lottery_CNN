@@ -1,3 +1,4 @@
+import openpyxl
 import pandas as pd
 import numpy as np
 import torch
@@ -5,7 +6,11 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
 from tqdm import tqdm
-import openpyxl
+
+# 设备检测
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+print(f'Using device: {device}')
+
 
 # ---------------------------
 # 参数设置
@@ -19,8 +24,8 @@ NUM_HIDDEN_LAYERS_BLUE = 3  # 蓝球模型中间隐藏层的数量
 
 # 红球模型参数
 INPUT_DIM = 33              # 输入维度（经过one-hot编码后每个红球）
-RED_FIRST_UNITS = 128       # 第一隐藏层神经元数
-RED_HIDDEN_UNITS = 64       # 每个中间隐藏层神经元数
+RED_FIRST_UNITS = 512       # 第一隐藏层神经元数
+RED_HIDDEN_UNITS = 512      # 每个中间隐藏层神经元数
 RED_OUTPUT_DIM = 33         # 输出层神经元数
 
 # 蓝球模型参数
@@ -53,7 +58,7 @@ def one_hot_encode(balls):
 input_features_one_hot = one_hot_encode(input_features.values)
 
 # 转换为PyTorch张量
-red_X = torch.FloatTensor(input_features_one_hot)
+red_X = torch.FloatTensor(input_features_one_hot).to(device)
 red_dataset = TensorDataset(red_X, red_X)
 red_loader = DataLoader(red_dataset, batch_size=BATCH_SIZE, shuffle=True)
 
@@ -79,7 +84,7 @@ class RedModel(nn.Module):
     def forward(self, x):
         return self.layers(x)
 
-red_model = RedModel()
+red_model = RedModel().to(device)
 red_criterion = nn.BCELoss()
 red_optimizer = optim.Adam(red_model.parameters(), lr=LEARNING_RATE)
 
@@ -114,7 +119,7 @@ for epoch in range(EPOCHS):
 red_model.eval()
 with torch.no_grad():
     red_predictions = red_model(red_X[-1].unsqueeze(0))
-    predicted_indices = torch.topk(red_predictions[0], 6).indices
+    predicted_indices = torch.topk(red_predictions[0], 6).indices.cpu()
     predicted_red_balls = predicted_indices.numpy() + 1  # 转换为1-33编号
 
 # ---------------------------
@@ -127,7 +132,7 @@ for i, ball in enumerate(blue_balls):
     blue_one_hot[i, int(ball)-1] = 1
 
 # 转换为PyTorch张量
-blue_X = torch.FloatTensor(blue_one_hot)
+blue_X = torch.FloatTensor(blue_one_hot).to(device)
 blue_dataset = TensorDataset(blue_X, blue_X)
 blue_loader = DataLoader(blue_dataset, batch_size=BATCH_SIZE, shuffle=True)
 
@@ -151,7 +156,7 @@ class BlueModel(nn.Module):
     def forward(self, x):
         return self.layers(x)
 
-blue_model = BlueModel()
+blue_model = BlueModel().to(device)
 blue_criterion = nn.MSELoss()
 blue_optimizer = optim.Adam(blue_model.parameters(), lr=LEARNING_RATE)
 
@@ -186,7 +191,7 @@ for epoch in range(EPOCHS):
     blue_model.eval()
     with torch.no_grad():
         blue_prediction = blue_model(blue_X[-1].unsqueeze(0))
-        predicted_index = torch.argmax(blue_prediction[0]).item()
+        predicted_index = torch.argmax(blue_prediction[0].cpu()).item()
         predicted_blue_ball = predicted_index + 1  # 转换为1-16编号
 
 # ---------------------------
