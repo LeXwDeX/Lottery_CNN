@@ -1,17 +1,16 @@
 import pandas as pd
 import numpy as np
-from sklearn.preprocessing import LabelBinarizer, MinMaxScaler
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import Dense, Input
-from tensorflow.keras.callbacks import EarlyStopping
-from tensorflow.keras.optimizers import Adam
-from tqdm.keras import TqdmCallback
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import DataLoader, TensorDataset
+from tqdm import tqdm
 import openpyxl
 
 # ---------------------------
 # 参数设置
 # ---------------------------
-EPOCHS = 1000               # 训练轮数
+EPOCHS = 100                # 训练轮数
 BATCH_SIZE = 10             # 批大小
 PATIENCE = 20               # EarlyStopping 的耐心值
 
@@ -32,8 +31,6 @@ BLUE_OUTPUT_DIM = 1         # 输出层
 
 # 优化器设置（两模型统一采用相同学习率）
 LEARNING_RATE = 0.001
-red_optimizer = Adam(learning_rate=LEARNING_RATE)
-blue_optimizer = Adam(learning_rate=LEARNING_RATE)
 
 # ---------------------------
 # 红球数据预处理
@@ -42,82 +39,157 @@ blue_optimizer = Adam(learning_rate=LEARNING_RATE)
 data = pd.read_excel('双色球.xlsx')
 input_features = data[['Ball1', 'Ball2', 'Ball3', 'Ball4', 'Ball5', 'Ball6']]
 
-# One-Hot编码：将每个红球数字（1~33）转换为33维的one-hot向量，
-# 然后对每行（6个球）求和，得到的向量中每个位置的值代表该数字出现的次数（0~6，一般为0或1）
-label_binarizer = LabelBinarizer()
-label_binarizer.fit(range(1, 34))
-one_hot_encoded = label_binarizer.transform(input_features.values.flatten())
-one_hot_encoded = one_hot_encoded.reshape(-1, 6, 33)
-input_features_one_hot = one_hot_encoded.sum(axis=1)  # 形状：(样本数, 33)
+# One-Hot编码：将每个红球数字（1~33）转换为33维的one-hot向量
+def one_hot_encode(balls):
+    # 确保球号在1-33范围内
+    balls = np.clip(balls, 1, 33)
+    # 创建正确维度的one-hot数组
+    one_hot = np.zeros((balls.size, 33))
+    for i, ball in enumerate(balls.flatten()):
+        one_hot[i, int(ball)-1] = 1
+    one_hot = one_hot.reshape(-1, 6, 33)
+    return one_hot.sum(axis=1)  # 形状：(样本数, 33)
+
+input_features_one_hot = one_hot_encode(input_features.values)
+
+# 转换为PyTorch张量
+red_X = torch.FloatTensor(input_features_one_hot)
+red_dataset = TensorDataset(red_X, red_X)
+red_loader = DataLoader(red_dataset, batch_size=BATCH_SIZE, shuffle=True)
 
 # ---------------------------
 # 构建红球模型（自编码器结构）
 # ---------------------------
-red_model = Sequential()
-red_model.add(Input(shape=(INPUT_DIM,)))
-red_model.add(Dense(RED_FIRST_UNITS, activation='relu'))
+class RedModel(nn.Module):
+    def __init__(self):
+        super(RedModel, self).__init__()
+        self.layers = nn.Sequential(
+            nn.Linear(INPUT_DIM, RED_FIRST_UNITS),
+            nn.ReLU(),
+            nn.Linear(RED_FIRST_UNITS, RED_HIDDEN_UNITS),
+            nn.ReLU(),
+            *[nn.Sequential(
+                nn.Linear(RED_HIDDEN_UNITS, RED_HIDDEN_UNITS),
+                nn.ReLU()
+            ) for _ in range(NUM_HIDDEN_LAYERS_RED-1)],
+            nn.Linear(RED_HIDDEN_UNITS, RED_OUTPUT_DIM),
+            nn.Sigmoid()
+        )
+    
+    def forward(self, x):
+        return self.layers(x)
 
-for _ in range(NUM_HIDDEN_LAYERS_RED):
-    red_model.add(Dense(RED_HIDDEN_UNITS, activation='relu'))
+red_model = RedModel()
+red_criterion = nn.BCELoss()
+red_optimizer = optim.Adam(red_model.parameters(), lr=LEARNING_RATE)
 
-red_model.add(Dense(RED_OUTPUT_DIM, activation='sigmoid'))
+# 红球模型训练
+best_red_loss = float('inf')
+red_patience_counter = 0
 
-red_model.compile(optimizer=red_optimizer, loss='binary_crossentropy', metrics=['accuracy'])
+for epoch in range(EPOCHS):
+    red_model.train()
+    epoch_loss = 0
+    for batch_X, _ in tqdm(red_loader, desc=f'Red Epoch {epoch+1}'):
+        red_optimizer.zero_grad()
+        outputs = red_model(batch_X)
+        loss = red_criterion(outputs, batch_X)
+        loss.backward()
+        red_optimizer.step()
+        epoch_loss += loss.item()
+    
+    avg_loss = epoch_loss / len(red_loader)
+    
+    # EarlyStopping
+    if avg_loss < best_red_loss:
+        best_red_loss = avg_loss
+        red_patience_counter = 0
+    else:
+        red_patience_counter += 1
+        if red_patience_counter >= PATIENCE:
+            print(f'Red Early stopping at epoch {epoch+1}')
+            break
 
-# 红球模型训练：目标是重构输入（自编码器）
-red_model.fit(input_features_one_hot,  
-              input_features_one_hot,  
-              epochs=EPOCHS,  
-              batch_size=BATCH_SIZE,  
-              verbose=0,  
-              callbacks=[
-                  TqdmCallback(verbose=1),
-                  EarlyStopping(monitor='loss', patience=PATIENCE)
-              ])
-
-# 红球预测：预测最后一条数据，并选出概率最高的6个数字作为预测结果
-red_predictions = red_model.predict(input_features_one_hot[-1].reshape(1, -1))
-predicted_indices = np.argsort(red_predictions[0])[::-1][:6]
-predicted_red_balls = np.array(range(1, 34))[predicted_indices]
+# 红球预测
+red_model.eval()
+with torch.no_grad():
+    red_predictions = red_model(red_X[-1].unsqueeze(0))
+    predicted_indices = torch.topk(red_predictions[0], 6).indices
+    predicted_red_balls = predicted_indices.numpy() + 1  # 转换为1-33编号
 
 # ---------------------------
 # 蓝球数据预处理
 # ---------------------------
 blue_balls = data['BlueBall'].values.reshape(-1, 1)
-scaler = MinMaxScaler(feature_range=(0, 1))
-blue_balls_scaled = scaler.fit_transform(blue_balls)
+blue_min = blue_balls.min()
+blue_max = blue_balls.max()
+blue_balls_scaled = (blue_balls - blue_min) / (blue_max - blue_min)  # 手动归一化
+
+# 转换为PyTorch张量
+blue_X = torch.FloatTensor(blue_balls_scaled)
+blue_dataset = TensorDataset(blue_X, blue_X)
+blue_loader = DataLoader(blue_dataset, batch_size=BATCH_SIZE, shuffle=True)
 
 # ---------------------------
 # 构建蓝球模型（自编码器结构）
 # ---------------------------
-blue_model = Sequential()
-blue_model.add(Input(shape=(BLUE_INPUT_DIM,)))
-blue_model.add(Dense(BLUE_FIRST_UNITS, activation='relu'))
+class BlueModel(nn.Module):
+    def __init__(self):
+        super(BlueModel, self).__init__()
+        self.layers = nn.Sequential(
+            nn.Linear(BLUE_INPUT_DIM, BLUE_FIRST_UNITS),
+            nn.ReLU(),
+            *[nn.Sequential(
+                nn.Linear(BLUE_HIDDEN_UNITS, BLUE_HIDDEN_UNITS),
+                nn.ReLU()
+            ) for _ in range(NUM_HIDDEN_LAYERS_BLUE)],
+            nn.Linear(BLUE_HIDDEN_UNITS, BLUE_OUTPUT_DIM),
+            nn.Sigmoid()
+        )
+    
+    def forward(self, x):
+        return self.layers(x)
 
-for _ in range(NUM_HIDDEN_LAYERS_BLUE):
-    blue_model.add(Dense(BLUE_HIDDEN_UNITS, activation='relu'))
+blue_model = BlueModel()
+blue_criterion = nn.MSELoss()
+blue_optimizer = optim.Adam(blue_model.parameters(), lr=LEARNING_RATE)
 
-blue_model.add(Dense(BLUE_OUTPUT_DIM, activation='sigmoid'))
+# 蓝球模型训练
+best_blue_loss = float('inf')
+blue_patience_counter = 0
 
-blue_model.compile(optimizer=blue_optimizer, loss='mean_squared_error')
+for epoch in range(EPOCHS):
+    blue_model.train()
+    epoch_loss = 0
+    for batch_X, _ in tqdm(blue_loader, desc=f'Blue Epoch {epoch+1}'):
+        blue_optimizer.zero_grad()
+        outputs = blue_model(batch_X)
+        loss = blue_criterion(outputs, batch_X)
+        loss.backward()
+        blue_optimizer.step()
+        epoch_loss += loss.item()
+    
+    avg_loss = epoch_loss / len(blue_loader)
+    
+    # EarlyStopping
+    if avg_loss < best_blue_loss:
+        best_blue_loss = avg_loss
+        blue_patience_counter = 0
+    else:
+        blue_patience_counter += 1
+        if blue_patience_counter >= PATIENCE:
+            print(f'Blue Early stopping at epoch {epoch+1}')
+            break
 
-# 蓝球模型训练：目标同样是重构输入（归一化后的蓝球数字）
-blue_model.fit(blue_balls_scaled,  
-               blue_balls_scaled,  
-               epochs=EPOCHS,  
-               batch_size=BATCH_SIZE,
-               verbose=0,
-               callbacks=[
-                   TqdmCallback(verbose=1),
-                   EarlyStopping(monitor='loss', patience=PATIENCE)
-               ])
-
-# 蓝球预测：预测最后一条数据，再通过逆归一化转换为原始数值
-blue_prediction = blue_model.predict(blue_balls_scaled[-1].reshape(1, -1))
-predicted_blue_ball = scaler.inverse_transform(blue_prediction).astype(int)
+# 蓝球预测
+blue_model.eval()
+with torch.no_grad():
+    blue_prediction = blue_model(blue_X[-1].unsqueeze(0))
+    predicted_blue_ball = blue_prediction.numpy() * (blue_max - blue_min) + blue_min
+    predicted_blue_ball = int(round(predicted_blue_ball[0][0]))
 
 # ---------------------------
 # 输出预测结果
 # ---------------------------
 print('Predicted Red Balls:', predicted_red_balls)
-print('Predicted Blue Ball:', predicted_blue_ball.flatten()[0])
+print('Predicted Blue Ball:', predicted_blue_ball)
