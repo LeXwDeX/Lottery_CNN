@@ -24,10 +24,10 @@ RED_HIDDEN_UNITS = 64       # 每个中间隐藏层神经元数
 RED_OUTPUT_DIM = 33         # 输出层神经元数
 
 # 蓝球模型参数
-BLUE_INPUT_DIM = 1          # 蓝球输入维度
+BLUE_INPUT_DIM = 16         # 蓝球输入维度
 BLUE_FIRST_UNITS = 128      # 第一层神经元数
 BLUE_HIDDEN_UNITS = 128     # 中间隐藏层神经元数
-BLUE_OUTPUT_DIM = 1         # 输出层
+BLUE_OUTPUT_DIM = 16        # 输出层
 
 # 优化器设置（两模型统一采用相同学习率）
 LEARNING_RATE = 0.001
@@ -120,13 +120,14 @@ with torch.no_grad():
 # ---------------------------
 # 蓝球数据预处理
 # ---------------------------
-blue_balls = data['BlueBall'].values.reshape(-1, 1)
-blue_min = blue_balls.min()
-blue_max = blue_balls.max()
-blue_balls_scaled = (blue_balls - blue_min) / (blue_max - blue_min)  # 手动归一化
+blue_balls = data['BlueBall'].values
+# 将蓝球数字(1-16)转换为16维one-hot向量
+blue_one_hot = np.zeros((blue_balls.size, 16))
+for i, ball in enumerate(blue_balls):
+    blue_one_hot[i, int(ball)-1] = 1
 
 # 转换为PyTorch张量
-blue_X = torch.FloatTensor(blue_balls_scaled)
+blue_X = torch.FloatTensor(blue_one_hot)
 blue_dataset = TensorDataset(blue_X, blue_X)
 blue_loader = DataLoader(blue_dataset, batch_size=BATCH_SIZE, shuffle=True)
 
@@ -181,12 +182,12 @@ for epoch in range(EPOCHS):
             print(f'Blue Early stopping at epoch {epoch+1}')
             break
 
-# 蓝球预测
-blue_model.eval()
-with torch.no_grad():
-    blue_prediction = blue_model(blue_X[-1].unsqueeze(0))
-    predicted_blue_ball = blue_prediction.numpy() * (blue_max - blue_min) + blue_min
-    predicted_blue_ball = int(round(predicted_blue_ball[0][0]))
+    # 蓝球预测
+    blue_model.eval()
+    with torch.no_grad():
+        blue_prediction = blue_model(blue_X[-1].unsqueeze(0))
+        predicted_index = torch.argmax(blue_prediction[0]).item()
+        predicted_blue_ball = predicted_index + 1  # 转换为1-16编号
 
 # ---------------------------
 # 输出预测结果
