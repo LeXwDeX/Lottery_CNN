@@ -189,9 +189,13 @@ for epoch in range(EPOCHS):
 blue_model.eval()
 with torch.no_grad():
     blue_prediction = blue_model(blue_X[-1].unsqueeze(0))
-    # 预测两个蓝球
+    # 预测第一个蓝球
     blue1_pred = torch.argmax(blue_prediction[0, :12]).item() + 1
-    blue2_pred = torch.argmax(blue_prediction[0, 12:]).item() + 1
+    
+    # 预测第二个蓝球(确保不等于第一个)
+    blue2_probs = blue_prediction[0, 12:].clone()
+    blue2_probs[blue1_pred-1] = -1  # 将第一个蓝球的概率设为-1
+    blue2_pred = torch.argmax(blue2_probs).item() + 1
 
 # ---------------------------
 # 输出预测结果
