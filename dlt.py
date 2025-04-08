@@ -15,7 +15,7 @@ print(f'Using device: {device}')
 # 参数设置
 # ---------------------------
 EPOCHS = 500                # 训练轮数
-BATCH_SIZE = 10             # 批大小
+BATCH_SIZE = 500            # 批大小
 PATIENCE = 20               # EarlyStopping 的耐心值
 
 NUM_HIDDEN_LAYERS_RED = 5   # 红球模型中间隐藏层的数量
@@ -23,14 +23,14 @@ NUM_HIDDEN_LAYERS_BLUE = 5  # 蓝球模型中间隐藏层的数量
 
 # 红球模型参数(大乐透红球范围1-35)
 INPUT_DIM = 35              # 输入维度
-RED_FIRST_UNITS = 128       # 第一隐藏层神经元数
-RED_HIDDEN_UNITS = 128      # 每个中间隐藏层神经元数
+RED_FIRST_UNITS = 512       # 第一隐藏层神经元数
+RED_HIDDEN_UNITS = 512      # 每个中间隐藏层神经元数
 RED_OUTPUT_DIM = 35         # 输出层神经元数
 
 # 蓝球模型参数(大乐透蓝球范围1-12)
 BLUE_INPUT_DIM = 12         # 蓝球输入维度
-BLUE_FIRST_UNITS = 128      # 第一层神经元数
-BLUE_HIDDEN_UNITS = 128     # 中间隐藏层神经元数
+BLUE_FIRST_UNITS = 512      # 第一层神经元数
+BLUE_HIDDEN_UNITS = 512     # 中间隐藏层神经元数
 BLUE_OUTPUT_DIM = 12        # 输出层
 
 # 优化器设置
