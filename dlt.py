@@ -15,7 +15,7 @@ print(f'Using device: {device}')
 # 参数设置
 # ---------------------------
 EPOCHS = 500                # 训练轮数
-BATCH_SIZE = 500            # 批大小
+BATCH_SIZE = 100            # 批大小
 PATIENCE = 20               # EarlyStopping 的耐心值
 
 NUM_HIDDEN_LAYERS_RED = 5   # 红球模型中间隐藏层的数量
