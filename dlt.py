@@ -41,6 +41,9 @@ LEARNING_RATE = 0.001
 # ---------------------------
 # 读取数据
 data = pd.read_excel('大乐透.xlsx')
+# 过滤掉红球或蓝球任意一列为"-"的数据行
+valid_mask = (data[['红球1', '红球2', '红球3', '红球4', '红球5', '蓝球1', '蓝球2']] != "-").all(axis=1)
+data = data[valid_mask].reset_index(drop=True)
 input_features = data[['红球1', '红球2', '红球3', '红球4', '红球5']]
 
 # One-Hot编码：将每个红球数字(1~35)转换为35维的one-hot向量
