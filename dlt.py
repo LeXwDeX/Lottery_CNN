@@ -205,3 +205,8 @@ with torch.no_grad():
 # ---------------------------
 print('Predicted Red Balls:', predicted_red_balls)
 print('Predicted Blue Balls:', [blue1_pred, blue2_pred])
+
+# 结果覆盖写入到TXT文件
+with open('dlt_predictions.txt', 'w') as f:
+    f.write('Predicted Red Balls: ' + ', '.join(map(str, predicted_red_balls)) + '\n')
+    f.write('Predicted Blue Balls: ' + str(blue1_pred) + ', ' + str(blue2_pred) + '\n')

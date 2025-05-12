@@ -199,3 +199,9 @@ for epoch in range(EPOCHS):
 # ---------------------------
 print('Predicted Red Balls:', predicted_red_balls)
 print('Predicted Blue Ball:', predicted_blue_ball)
+
+
+# 结果覆盖写入到TXT文件
+with open('ssq_predictions.txt', 'w') as f:
+    f.write('Predicted Red Balls: ' + ', '.join(map(str, predicted_red_balls)) + '\n')
+    f.write('Predicted Blue Ball: ' + str(predicted_blue_ball) + '\n')
