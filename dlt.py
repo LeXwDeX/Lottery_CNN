@@ -14,23 +14,24 @@ print(f'Using device: {device}')
 # ---------------------------
 # 参数设置
 # ---------------------------
-EPOCHS = 500                # 训练轮数
-BATCH_SIZE = 100            # 批大小
-PATIENCE = 20               # EarlyStopping 的耐心值
+EPOCHS = 100                # 训练轮数
+BATCH_SIZE = 32             # 批大小
+PATIENCE = 10               # EarlyStopping 的耐心值
 
-NUM_HIDDEN_LAYERS_RED = 5   # 红球模型中间隐藏层的数量
-NUM_HIDDEN_LAYERS_BLUE = 5  # 蓝球模型中间隐藏层的数量
+# 极简网络结构
+NUM_HIDDEN_LAYERS_RED = 2   # 红球模型中间隐藏层的数量
+NUM_HIDDEN_LAYERS_BLUE = 1  # 蓝球模型中间隐藏层的数量
 
 # 红球模型参数(大乐透红球范围1-35)
 INPUT_DIM = 35              # 输入维度
-RED_FIRST_UNITS = 512       # 第一隐藏层神经元数
-RED_HIDDEN_UNITS = 512      # 每个中间隐藏层神经元数
+RED_FIRST_UNITS = 64        # 第一隐藏层神经元数
+RED_HIDDEN_UNITS = 64       # 每个中间隐藏层神经元数
 RED_OUTPUT_DIM = 35         # 输出层神经元数
 
 # 蓝球模型参数(大乐透蓝球范围1-12)
 BLUE_INPUT_DIM = 12         # 蓝球输入维度
-BLUE_FIRST_UNITS = 512      # 第一层神经元数
-BLUE_HIDDEN_UNITS = 512     # 中间隐藏层神经元数
+BLUE_FIRST_UNITS = 32       # 第一层神经元数
+BLUE_HIDDEN_UNITS = 32      # 中间隐藏层神经元数
 BLUE_OUTPUT_DIM = 12        # 输出层
 
 # 优化器设置
@@ -55,21 +56,30 @@ def one_hot_encode(balls):
     one_hot = one_hot.reshape(-1, 5, 35)
     return one_hot.sum(axis=1)  # 形状：(样本数, 35)
 
-input_features_one_hot = one_hot_encode(input_features.values)
+# 构造全历史特征：用全部历史红球数据预测下一期红球
+red_features = data[['红球1', '红球2', '红球3', '红球4', '红球5']].values
+if len(red_features) < 2:
+    raise ValueError("有效数据不足，无法进行红球全历史预测！")
+
+# 输入：全部历史期的红球one-hot拼接成一行
+red_X_np = one_hot_encode(red_features[:-1]).flatten().reshape(1, -1)  # shape (1, (N-1)*35)
+# 输出：最后一期的红球one-hot
+red_y_np = one_hot_encode(red_features[-1:])  # shape (1, 35)
 
 # 转换为PyTorch张量
-red_X = torch.FloatTensor(input_features_one_hot).to(device)
-red_dataset = TensorDataset(red_X, red_X)
-red_loader = DataLoader(red_dataset, batch_size=BATCH_SIZE, shuffle=True)
+red_X = torch.FloatTensor(red_X_np).to(device)
+red_y = torch.FloatTensor(red_y_np).to(device)
+red_dataset = TensorDataset(red_X, red_y)
+red_loader = DataLoader(red_dataset, batch_size=1, shuffle=False)
 
 # ---------------------------
 # 构建红球模型（自编码器结构）
 # ---------------------------
 class RedModel(nn.Module):
-    def __init__(self):
+    def __init__(self, input_dim):
         super(RedModel, self).__init__()
         self.layers = nn.Sequential(
-            nn.Linear(INPUT_DIM, RED_FIRST_UNITS),
+            nn.Linear(input_dim, RED_FIRST_UNITS),
             nn.ReLU(),
             nn.Linear(RED_FIRST_UNITS, RED_HIDDEN_UNITS),
             nn.ReLU(),
@@ -84,7 +94,7 @@ class RedModel(nn.Module):
     def forward(self, x):
         return self.layers(x)
 
-red_model = RedModel().to(device)
+red_model = RedModel(red_X.shape[1]).to(device)
 red_criterion = nn.BCELoss()
 red_optimizer = optim.Adam(red_model.parameters(), lr=LEARNING_RATE)
 
@@ -98,7 +108,7 @@ for epoch in range(EPOCHS):
     for batch_X, _ in tqdm(red_loader, desc=f'Red Epoch {epoch+1}'):
         red_optimizer.zero_grad()
         outputs = red_model(batch_X)
-        loss = red_criterion(outputs, batch_X)
+        loss = red_criterion(outputs, red_y)
         loss.backward()
         red_optimizer.step()
         epoch_loss += loss.item()
@@ -118,33 +128,49 @@ for epoch in range(EPOCHS):
 # 红球预测
 red_model.eval()
 with torch.no_grad():
-    red_predictions = red_model(red_X[-1].unsqueeze(0))
+    red_predictions = red_model(red_X[0].unsqueeze(0))
     predicted_indices = torch.topk(red_predictions[0], 5).indices.cpu()
     predicted_red_balls = predicted_indices.numpy() + 1  # 转换为1-35编号
+    print("全历史预测红球:", predicted_red_balls)
 
 # ---------------------------
 # 蓝球数据预处理
 # ---------------------------
 blue_balls = data[['蓝球1', '蓝球2']].values
-# 将蓝球数字(1-12)转换为12维one-hot向量
-blue_one_hot = np.zeros((blue_balls.size, 24))  # 2个蓝球×12维
-for i, (ball1, ball2) in enumerate(blue_balls):
-    blue_one_hot[i, int(ball1)-1] = 1
-    blue_one_hot[i, 12 + int(ball2)-1] = 1
+if len(blue_balls) < 2:
+    raise ValueError("有效数据不足，无法进行蓝球预测！")
+
+# 构造全历史特征：用全部历史蓝球数据预测下一期蓝球
+def blue_one_hot_encode(balls):
+    # balls: (样本数, 2)
+    one_hot = np.zeros((balls.shape[0], 24))
+    for i, (ball1, ball2) in enumerate(balls):
+        one_hot[i, int(ball1)-1] = 1
+        one_hot[i, 12 + int(ball2)-1] = 1
+    return one_hot
+
+if len(blue_balls) < 2:
+    raise ValueError("有效数据不足，无法进行蓝球全历史预测！")
+
+# 输入：全部历史期的蓝球one-hot拼接成一行
+blue_X_np = blue_one_hot_encode(blue_balls[:-1]).flatten().reshape(1, -1)  # shape (1, (N-1)*24)
+# 输出：最后一期的蓝球one-hot
+blue_y_np = blue_one_hot_encode(blue_balls[-1:])  # shape (1, 24)
 
 # 转换为PyTorch张量
-blue_X = torch.FloatTensor(blue_one_hot).to(device)
-blue_dataset = TensorDataset(blue_X, blue_X)
-blue_loader = DataLoader(blue_dataset, batch_size=BATCH_SIZE, shuffle=True)
+blue_X = torch.FloatTensor(blue_X_np).to(device)
+blue_y = torch.FloatTensor(blue_y_np).to(device)
+blue_dataset = TensorDataset(blue_X, blue_y)
+blue_loader = DataLoader(blue_dataset, batch_size=1, shuffle=False)
 
 # ---------------------------
 # 构建蓝球模型（自编码器结构）
 # ---------------------------
 class BlueModel(nn.Module):
-    def __init__(self):
+    def __init__(self, input_dim):
         super(BlueModel, self).__init__()
         self.layers = nn.Sequential(
-            nn.Linear(BLUE_INPUT_DIM*2, BLUE_FIRST_UNITS),  # 2个蓝球×12维=24
+            nn.Linear(input_dim, BLUE_FIRST_UNITS),
             nn.ReLU(),
             *[nn.Sequential(
                 nn.Linear(BLUE_HIDDEN_UNITS, BLUE_HIDDEN_UNITS),
@@ -157,7 +183,7 @@ class BlueModel(nn.Module):
     def forward(self, x):
         return self.layers(x)
 
-blue_model = BlueModel().to(device)
+blue_model = BlueModel(blue_X.shape[1]).to(device)
 blue_criterion = nn.MSELoss()
 blue_optimizer = optim.Adam(blue_model.parameters(), lr=LEARNING_RATE)
 
@@ -171,7 +197,7 @@ for epoch in range(EPOCHS):
     for batch_X, _ in tqdm(blue_loader, desc=f'Blue Epoch {epoch+1}'):
         blue_optimizer.zero_grad()
         outputs = blue_model(batch_X)
-        loss = blue_criterion(outputs, batch_X)
+        loss = blue_criterion(outputs, blue_y)
         loss.backward()
         blue_optimizer.step()
         epoch_loss += loss.item()
