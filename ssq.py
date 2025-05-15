@@ -11,12 +11,11 @@ from tqdm import tqdm
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(f'Using device: {device}')
 
-
 # ---------------------------
 # 参数设置
 # ---------------------------
 EPOCHS = 100                # 训练轮数
-BATCH_SIZE = 32             # 批大小
+BATCH_SIZE = 1              # 批大小
 PATIENCE = 10               # EarlyStopping 的耐心值
 
 NUM_HIDDEN_LAYERS_RED = 2   # 红球模型中间隐藏层的数量
@@ -34,7 +33,7 @@ BLUE_FIRST_UNITS = 32       # 第一层神经元数
 BLUE_HIDDEN_UNITS = 32      # 中间隐藏层神经元数
 BLUE_OUTPUT_DIM = 16        # 输出层
 
-# 优化器设置（两模型统一采用相同学习率）
+# 优化器设置
 LEARNING_RATE = 0.001
 
 # ---------------------------
@@ -53,19 +52,25 @@ def one_hot_encode(balls):
     one_hot = one_hot.reshape(-1, 6, 33)
     return one_hot.sum(axis=1)  # 形状：(样本数, 33)
 
-if len(red_features) < 2:
-    raise ValueError("有效数据不足，无法进行红球全历史预测！")
+window_size = 10  # 用最近10期预测下一期
+if len(red_features) <= window_size:
+    raise ValueError("有效数据不足，无法进行红球滑动窗口预测！")
 
-# 输入：全部历史期的红球one-hot拼接成一行
-red_X_np = one_hot_encode(red_features[:-1]).flatten().reshape(1, -1)  # shape (1, (N-1)*33)
-# 输出：最后一期的红球one-hot
-red_y_np = one_hot_encode(red_features[-1:])  # shape (1, 33)
+red_X_list = []
+red_y_list = []
+for i in range(len(red_features) - window_size):
+    x = one_hot_encode(red_features[i:i+window_size]).flatten()
+    y = one_hot_encode(red_features[i+window_size:i+window_size+1]).flatten()
+    red_X_list.append(x)
+    red_y_list.append(y)
+red_X_np = np.stack(red_X_list)
+red_y_np = np.stack(red_y_list)
 
 # 转换为PyTorch张量
 red_X = torch.FloatTensor(red_X_np).to(device)
 red_y = torch.FloatTensor(red_y_np).to(device)
 red_dataset = TensorDataset(red_X, red_y)
-red_loader = DataLoader(red_dataset, batch_size=1, shuffle=False)
+red_loader = DataLoader(red_dataset, batch_size=BATCH_SIZE, shuffle=True)
 
 # ---------------------------
 # 构建红球模型（自编码器结构）
@@ -100,10 +105,10 @@ red_patience_counter = 0
 for epoch in range(EPOCHS):
     red_model.train()
     epoch_loss = 0
-    for batch_X, _ in tqdm(red_loader, desc=f'Red Epoch {epoch+1}'):
+    for batch_X, batch_y in tqdm(red_loader, desc=f'Red Epoch {epoch+1}'):
         red_optimizer.zero_grad()
         outputs = red_model(batch_X)
-        loss = red_criterion(outputs, red_y)
+        loss = red_criterion(outputs, batch_y)
         loss.backward()
         red_optimizer.step()
         epoch_loss += loss.item()
@@ -121,36 +126,46 @@ for epoch in range(EPOCHS):
             break
 
 # 红球预测
+# 用最新window_size期预测下一期
 red_model.eval()
 with torch.no_grad():
-    red_predictions = red_model(red_X[0].unsqueeze(0))
+    latest_x = one_hot_encode(red_features[-window_size:]).flatten().reshape(1, -1)
+    latest_x_tensor = torch.FloatTensor(latest_x).to(device)
+    red_predictions = red_model(latest_x_tensor)
     predicted_indices = torch.topk(red_predictions[0], 6).indices.cpu()
     predicted_red_balls = predicted_indices.numpy() + 1  # 转换为1-33编号
-    print("全历史预测红球:", predicted_red_balls)
+    print("数字运动预测红球:", predicted_red_balls)
 
 # ---------------------------
 # 蓝球数据预处理
 # ---------------------------
 blue_balls = data['BlueBall'].values
+
 def blue_one_hot_encode(balls):
     one_hot = np.zeros((balls.size, 16))
     for i, ball in enumerate(balls):
         one_hot[i, int(ball)-1] = 1
     return one_hot
 
-if len(blue_balls) < 2:
-    raise ValueError("有效数据不足，无法进行蓝球全历史预测！")
+window_size_blue = 10  # 用最近10期预测下一期
+if len(blue_balls) <= window_size_blue:
+    raise ValueError("有效数据不足，无法进行蓝球滑动窗口预测！")
 
-# 输入：全部历史期的蓝球one-hot拼接成一行
-blue_X_np = blue_one_hot_encode(blue_balls[:-1]).flatten().reshape(1, -1)  # shape (1, (N-1)*16)
-# 输出：最后一期的蓝球one-hot
-blue_y_np = blue_one_hot_encode(blue_balls[-1:])  # shape (1, 16)
+blue_X_list = []
+blue_y_list = []
+for i in range(len(blue_balls) - window_size_blue):
+    x = blue_one_hot_encode(blue_balls[i:i+window_size_blue]).flatten()
+    y = blue_one_hot_encode(blue_balls[i+window_size_blue:i+window_size_blue+1]).flatten()
+    blue_X_list.append(x)
+    blue_y_list.append(y)
+blue_X_np = np.stack(blue_X_list)
+blue_y_np = np.stack(blue_y_list)
 
 # 转换为PyTorch张量
 blue_X = torch.FloatTensor(blue_X_np).to(device)
 blue_y = torch.FloatTensor(blue_y_np).to(device)
 blue_dataset = TensorDataset(blue_X, blue_y)
-blue_loader = DataLoader(blue_dataset, batch_size=1, shuffle=False)
+blue_loader = DataLoader(blue_dataset, batch_size=BATCH_SIZE, shuffle=True)
 
 # ---------------------------
 # 构建蓝球模型（自编码器结构）
@@ -183,10 +198,10 @@ blue_patience_counter = 0
 for epoch in range(EPOCHS):
     blue_model.train()
     epoch_loss = 0
-    for batch_X, _ in tqdm(blue_loader, desc=f'Blue Epoch {epoch+1}'):
+    for batch_X, batch_y in tqdm(blue_loader, desc=f'Blue Epoch {epoch+1}'):
         blue_optimizer.zero_grad()
         outputs = blue_model(batch_X)
-        loss = blue_criterion(outputs, blue_y)
+        loss = blue_criterion(outputs, batch_y)
         loss.backward()
         blue_optimizer.step()
         epoch_loss += loss.item()
@@ -204,12 +219,15 @@ for epoch in range(EPOCHS):
             break
 
 # 蓝球预测
+# 用最新window_size_blue期预测下一期
 blue_model.eval()
 with torch.no_grad():
-    blue_prediction = blue_model(blue_X[0].unsqueeze(0))
+    latest_x_blue = blue_one_hot_encode(blue_balls[-window_size_blue:]).flatten().reshape(1, -1)
+    latest_x_blue_tensor = torch.FloatTensor(latest_x_blue).to(device)
+    blue_prediction = blue_model(latest_x_blue_tensor)
     predicted_index = torch.argmax(blue_prediction[0].cpu()).item()
     predicted_blue_ball = predicted_index + 1  # 转换为1-16编号
-    print("全历史预测蓝球:", predicted_blue_ball)
+    print("数字运动预测蓝球:", predicted_blue_ball)
 
 # ---------------------------
 # 输出预测结果
