@@ -14,7 +14,7 @@ print(f'Using device: {device}')
 # ---------------------------
 # 参数设置
 # ---------------------------
-EPOCHS = 100                # 训练轮数
+EPOCHS = 10                 # 训练轮数
 BATCH_SIZE = 1              # 批大小
 PATIENCE = 10               # EarlyStopping 的耐心值
 
@@ -35,7 +35,7 @@ BLUE_HIDDEN_UNITS = 32      # 中间隐藏层神经元数
 BLUE_OUTPUT_DIM = 12        # 输出层
 
 # 优化器设置
-LEARNING_RATE = 0.0001
+LEARNING_RATE = 0.001
 
 # ---------------------------
 # 红球数据预处理

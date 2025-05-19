@@ -14,7 +14,7 @@ print(f'Using device: {device}')
 # ---------------------------
 # 参数设置
 # ---------------------------
-EPOCHS = 100                # 训练轮数
+EPOCHS = 10                 # 训练轮数
 BATCH_SIZE = 1              # 批大小
 PATIENCE = 10               # EarlyStopping 的耐心值
 
