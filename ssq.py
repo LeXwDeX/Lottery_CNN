@@ -1,241 +1,188 @@
-import openpyxl
 import pandas as pd
 import numpy as np
-import torch
-import torch.nn as nn
-import torch.optim as optim
-from torch.utils.data import DataLoader, TensorDataset
-from tqdm import tqdm
+from sklearn.ensemble import RandomForestClassifier
+import warnings
+from rich.console import Console
+from rich.panel import Panel
+from rich.table import Table
 
-# 设备检测
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-print(f'Using device: {device}')
+console = Console()
+warnings.filterwarnings("ignore")
 
-# ---------------------------
-# 参数设置
-# ---------------------------
-EPOCHS = 10                 # 训练轮数
-BATCH_SIZE = 1              # 批大小
-PATIENCE = 10               # EarlyStopping 的耐心值
-
-NUM_HIDDEN_LAYERS_RED = 2   # 红球模型中间隐藏层的数量
-NUM_HIDDEN_LAYERS_BLUE = 1  # 蓝球模型中间隐藏层的数量
-
-# 红球模型参数
-INPUT_DIM = 33              # 输入维度（经过one-hot编码后每个红球）
-RED_FIRST_UNITS = 64        # 第一隐藏层神经元数
-RED_HIDDEN_UNITS = 64       # 每个中间隐藏层神经元数
-RED_OUTPUT_DIM = 33         # 输出层神经元数
-
-# 蓝球模型参数
-BLUE_INPUT_DIM = 16         # 蓝球输入维度
-BLUE_FIRST_UNITS = 32       # 第一层神经元数
-BLUE_HIDDEN_UNITS = 32      # 中间隐藏层神经元数
-BLUE_OUTPUT_DIM = 16        # 输出层
-
-# 优化器设置
-LEARNING_RATE = 0.001
-
-# ---------------------------
-# 红球数据预处理
 # ---------------------------
 # 读取数据
+# ---------------------------
+console.rule("[bold green]双色球智能预测系统")
+console.print(Panel("数据加载中...", style="cyan"))
 data = pd.read_excel('双色球.xlsx')
-red_features = data[['Ball1', 'Ball2', 'Ball3', 'Ball4', 'Ball5', 'Ball6']].values
-
-# One-Hot编码：将每个红球数字（1~33）转换为33维的one-hot向量
-def one_hot_encode(balls):
-    balls = np.clip(balls, 1, 33)
-    one_hot = np.zeros((balls.size, 33))
-    for i, ball in enumerate(balls.flatten()):
-        one_hot[i, int(ball)-1] = 1
-    one_hot = one_hot.reshape(-1, 6, 33)
-    return one_hot.sum(axis=1)  # 形状：(样本数, 33)
-
-window_size = 10  # 用最近10期预测下一期
-if len(red_features) <= window_size:
-    raise ValueError("有效数据不足，无法进行红球滑动窗口预测！")
-
-red_X_list = []
-red_y_list = []
-for i in range(len(red_features) - window_size):
-    x = one_hot_encode(red_features[i:i+window_size]).flatten()
-    y = one_hot_encode(red_features[i+window_size:i+window_size+1]).flatten()
-    red_X_list.append(x)
-    red_y_list.append(y)
-red_X_np = np.stack(red_X_list)
-red_y_np = np.stack(red_y_list)
-
-# 转换为PyTorch张量
-red_X = torch.FloatTensor(red_X_np).to(device)
-red_y = torch.FloatTensor(red_y_np).to(device)
-red_dataset = TensorDataset(red_X, red_y)
-red_loader = DataLoader(red_dataset, batch_size=BATCH_SIZE, shuffle=True)
+# 适配Excel表头为A~G或0~6的情况，自动重命名为标准列名
+if list(data.columns)[:7] == list('ABCDEFG'):
+    data.columns = ['Ball1', 'Ball2', 'Ball3', 'Ball4', 'Ball5', 'Ball6', 'BlueBall']
+elif list(data.columns)[:7] == list(range(7)):
+    data.columns = ['Ball1', 'Ball2', 'Ball3', 'Ball4', 'Ball5', 'Ball6', 'BlueBall']
+# 过滤掉红球或蓝球任意一列为"-"或空的数据行
+cols = ['Ball1', 'Ball2', 'Ball3', 'Ball4', 'Ball5', 'Ball6', 'BlueBall']
+valid_mask = (data[cols].replace("-", np.nan).notnull()).all(axis=1)
+data = data[valid_mask].reset_index(drop=True)
+data[cols] = data[cols].astype(int)
+console.print(f"[green]数据加载成功，共 {len(data)} 期有效数据。[/green]")
 
 # ---------------------------
-# 构建红球模型（自编码器结构）
+# 特征工程
 # ---------------------------
-class RedModel(nn.Module):
-    def __init__(self, input_dim):
-        super(RedModel, self).__init__()
-        self.layers = nn.Sequential(
-            nn.Linear(input_dim, RED_FIRST_UNITS),
-            nn.ReLU(),
-            nn.Linear(RED_FIRST_UNITS, RED_HIDDEN_UNITS),
-            nn.ReLU(),
-            *[nn.Sequential(
-                nn.Linear(RED_HIDDEN_UNITS, RED_HIDDEN_UNITS),
-                nn.ReLU()
-            ) for _ in range(NUM_HIDDEN_LAYERS_RED-1)],
-            nn.Linear(RED_HIDDEN_UNITS, RED_OUTPUT_DIM),
-            nn.Sigmoid()
-        )
-    
-    def forward(self, x):
-        return self.layers(x)
+def get_features(df, idx, window=10):
+    # 统计特征：频率、遗漏、和值、奇偶、区间、连号
+    reds = df.loc[idx-window:idx-1, ['Ball1', 'Ball2', 'Ball3', 'Ball4', 'Ball5', 'Ball6']].values
+    if len(reds) < window:
+        reds = df.loc[:idx-1, ['Ball1', 'Ball2', 'Ball3', 'Ball4', 'Ball5', 'Ball6']].values
+    flat = reds.flatten()
+    # 1. 频率
+    freq = np.zeros(33)
+    for n in flat:
+        freq[n-1] += 1
+    freq = freq / flat.size
+    # 2. 当前遗漏
+    last_seen = np.zeros(33)
+    for i in range(33):
+        for j in range(idx-1, idx-window-1, -1):
+            if j < 0: break
+            if (i+1) in df.loc[j, ['Ball1', 'Ball2', 'Ball3', 'Ball4', 'Ball5', 'Ball6']].values:
+                last_seen[i] = idx-1-j
+                break
+        else:
+            last_seen[i] = window
+    last_seen = last_seen / window
+    # 3. 和值
+    sumv = flat.sum() / (6*33)
+    # 4. 奇偶比
+    odd = np.sum(flat % 2)
+    even = flat.size - odd
+    odd_even = np.array([odd/flat.size, even/flat.size])
+    # 5. 区间分布（1-11,12-22,23-33）
+    seg = [0,0,0]
+    for n in flat:
+        if n <= 11:
+            seg[0] += 1
+        elif n <= 22:
+            seg[1] += 1
+        else:
+            seg[2] += 1
+    seg = np.array(seg)/flat.size
+    # 6. 连号数
+    sorted_balls = np.sort(flat)
+    lianhao = np.sum(np.diff(sorted_balls)==1) / (flat.size-1)
+    return np.concatenate([freq, last_seen, [sumv], odd_even, seg, [lianhao]])
 
-red_model = RedModel(red_X.shape[1]).to(device)
-red_criterion = nn.BCELoss()
-red_optimizer = optim.Adam(red_model.parameters(), lr=LEARNING_RATE)
+def get_blue_features(df, idx, window=10):
+    blues = df.loc[idx-window:idx-1, ['BlueBall']].values
+    if len(blues) < window:
+        blues = df.loc[:idx-1, ['BlueBall']].values
+    flat = blues.flatten()
+    # 1. 频率
+    freq = np.zeros(16)
+    for n in flat:
+        freq[n-1] += 1
+    freq = freq / flat.size
+    # 2. 当前遗漏
+    last_seen = np.zeros(16)
+    for i in range(16):
+        for j in range(idx-1, idx-window-1, -1):
+            if j < 0: break
+            if (i+1) == df.loc[j, 'BlueBall']:
+                last_seen[i] = idx-1-j
+                break
+        else:
+            last_seen[i] = window
+    last_seen = last_seen / window
+    # 3. 和值
+    sumv = flat.sum() / (1*16*window)
+    # 4. 奇偶
+    odd = np.sum(flat % 2)
+    even = flat.size - odd
+    odd_even = np.array([odd/flat.size, even/flat.size])
+    return np.concatenate([freq, last_seen, [sumv], odd_even])
 
-# 红球模型训练
-best_red_loss = float('inf')
-red_patience_counter = 0
+# 构造红球训练集
+console.print(Panel("特征工程中...", style="cyan"))
+window = 10
+red_X = []
+red_y = [[] for _ in range(6)]
+for i in range(window, len(data)-1):
+    feat = get_features(data, i, window)
+    red_X.append(feat)
+    for k in range(6):
+        red_y[k].append(data.iloc[i, k])  # Ball1~Ball6
+red_X = np.array(red_X)
+red_y = [np.array(y) for y in red_y]
 
-for epoch in range(EPOCHS):
-    red_model.train()
-    epoch_loss = 0
-    for batch_X, batch_y in tqdm(red_loader, desc=f'Red Epoch {epoch+1}'):
-        red_optimizer.zero_grad()
-        outputs = red_model(batch_X)
-        loss = red_criterion(outputs, batch_y)
-        loss.backward()
-        red_optimizer.step()
-        epoch_loss += loss.item()
-    
-    avg_loss = epoch_loss / len(red_loader)
-    
-    # EarlyStopping
-    if avg_loss < best_red_loss:
-        best_red_loss = avg_loss
-        red_patience_counter = 0
-    else:
-        red_patience_counter += 1
-        if red_patience_counter >= PATIENCE:
-            print(f'Red Early stopping at epoch {epoch+1}')
+# 构造蓝球训练集
+blue_X = []
+blue_y = []
+for i in range(window, len(data)-1):
+    feat = get_blue_features(data, i, window)
+    blue_X.append(feat)
+    blue_y.append(data.loc[i, 'BlueBall'])
+blue_X = np.array(blue_X)
+blue_y = np.array(blue_y)
+console.print("[green]特征工程完成。[/green]")
+
+# ---------------------------
+# 随机森林建模
+# ---------------------------
+console.print(Panel("红球随机森林建模...", style="cyan"))
+red_models = []
+for k in range(6):
+    y = red_y[k]
+    clf = RandomForestClassifier(n_estimators=100, max_depth=8, random_state=42)
+    clf.fit(red_X, y)
+    red_models.append(clf)
+    console.print(f"[yellow]红球{k+1} 随机森林训练完成[/yellow]")
+console.print("[green]红球随机森林全部完成。[/green]")
+
+console.print(Panel("蓝球随机森林建模...", style="cyan"))
+blue_model = RandomForestClassifier(n_estimators=100, max_depth=8, random_state=42)
+blue_model.fit(blue_X, blue_y)
+console.print(f"[yellow]蓝球 随机森林训练完成[/yellow]")
+console.print("[green]蓝球随机森林全部完成。[/green]")
+
+# ---------------------------
+# 预测下一期
+# ---------------------------
+console.print(Panel("预测下一期...", style="cyan"))
+latest_red_feat = get_features(data, len(data), window).reshape(1, -1)
+latest_blue_feat = get_blue_features(data, len(data), window).reshape(1, -1)
+
+predicted_red_balls = []
+for k, model in enumerate(red_models):
+    # 预测概率分布，取概率最大的球号
+    proba = model.predict_proba(latest_red_feat)[0]
+    pred = np.argmax(proba) + 1
+    predicted_red_balls.append(pred)
+predicted_red_balls = sorted(set(predicted_red_balls))
+while len(predicted_red_balls) < 6:
+    for i in range(1, 34):
+        if i not in predicted_red_balls:
+            predicted_red_balls.append(i)
+        if len(predicted_red_balls) == 6:
             break
+predicted_red_balls = sorted(predicted_red_balls)
 
-# 红球预测
-# 用最新window_size期预测下一期
-red_model.eval()
-with torch.no_grad():
-    latest_x = one_hot_encode(red_features[-window_size:]).flatten().reshape(1, -1)
-    latest_x_tensor = torch.FloatTensor(latest_x).to(device)
-    red_predictions = red_model(latest_x_tensor)
-    predicted_indices = torch.topk(red_predictions[0], 6).indices.cpu()
-    predicted_red_balls = predicted_indices.numpy() + 1  # 转换为1-33编号
-    print("数字运动预测红球:", predicted_red_balls)
-
-# ---------------------------
-# 蓝球数据预处理
-# ---------------------------
-blue_balls = data['BlueBall'].values
-
-def blue_one_hot_encode(balls):
-    one_hot = np.zeros((balls.size, 16))
-    for i, ball in enumerate(balls):
-        one_hot[i, int(ball)-1] = 1
-    return one_hot
-
-window_size_blue = 10  # 用最近10期预测下一期
-if len(blue_balls) <= window_size_blue:
-    raise ValueError("有效数据不足，无法进行蓝球滑动窗口预测！")
-
-blue_X_list = []
-blue_y_list = []
-for i in range(len(blue_balls) - window_size_blue):
-    x = blue_one_hot_encode(blue_balls[i:i+window_size_blue]).flatten()
-    y = blue_one_hot_encode(blue_balls[i+window_size_blue:i+window_size_blue+1]).flatten()
-    blue_X_list.append(x)
-    blue_y_list.append(y)
-blue_X_np = np.stack(blue_X_list)
-blue_y_np = np.stack(blue_y_list)
-
-# 转换为PyTorch张量
-blue_X = torch.FloatTensor(blue_X_np).to(device)
-blue_y = torch.FloatTensor(blue_y_np).to(device)
-blue_dataset = TensorDataset(blue_X, blue_y)
-blue_loader = DataLoader(blue_dataset, batch_size=BATCH_SIZE, shuffle=True)
-
-# ---------------------------
-# 构建蓝球模型（自编码器结构）
-# ---------------------------
-class BlueModel(nn.Module):
-    def __init__(self, input_dim):
-        super(BlueModel, self).__init__()
-        self.layers = nn.Sequential(
-            nn.Linear(input_dim, BLUE_FIRST_UNITS),
-            nn.ReLU(),
-            *[nn.Sequential(
-                nn.Linear(BLUE_HIDDEN_UNITS, BLUE_HIDDEN_UNITS),
-                nn.ReLU()
-            ) for _ in range(NUM_HIDDEN_LAYERS_BLUE)],
-            nn.Linear(BLUE_HIDDEN_UNITS, BLUE_OUTPUT_DIM),
-            nn.Sigmoid()
-        )
-    
-    def forward(self, x):
-        return self.layers(x)
-
-blue_model = BlueModel(blue_X.shape[1]).to(device)
-blue_criterion = nn.MSELoss()
-blue_optimizer = optim.Adam(blue_model.parameters(), lr=LEARNING_RATE)
-
-# 蓝球模型训练
-best_blue_loss = float('inf')
-blue_patience_counter = 0
-
-for epoch in range(EPOCHS):
-    blue_model.train()
-    epoch_loss = 0
-    for batch_X, batch_y in tqdm(blue_loader, desc=f'Blue Epoch {epoch+1}'):
-        blue_optimizer.zero_grad()
-        outputs = blue_model(batch_X)
-        loss = blue_criterion(outputs, batch_y)
-        loss.backward()
-        blue_optimizer.step()
-        epoch_loss += loss.item()
-    
-    avg_loss = epoch_loss / len(blue_loader)
-    
-    # EarlyStopping
-    if avg_loss < best_blue_loss:
-        best_blue_loss = avg_loss
-        blue_patience_counter = 0
-    else:
-        blue_patience_counter += 1
-        if blue_patience_counter >= PATIENCE:
-            print(f'Blue Early stopping at epoch {epoch+1}')
-            break
-
-# 蓝球预测
-# 用最新window_size_blue期预测下一期
-blue_model.eval()
-with torch.no_grad():
-    latest_x_blue = blue_one_hot_encode(blue_balls[-window_size_blue:]).flatten().reshape(1, -1)
-    latest_x_blue_tensor = torch.FloatTensor(latest_x_blue).to(device)
-    blue_prediction = blue_model(latest_x_blue_tensor)
-    predicted_index = torch.argmax(blue_prediction[0].cpu()).item()
-    predicted_blue_ball = predicted_index + 1  # 转换为1-16编号
-    print("数字运动预测蓝球:", predicted_blue_ball)
+blue_proba = blue_model.predict_proba(latest_blue_feat)[0]
+predicted_blue_ball = np.argmax(blue_proba) + 1
+predicted_blue_ball = max(1, min(16, predicted_blue_ball))
 
 # ---------------------------
 # 输出预测结果
 # ---------------------------
-print('Predicted Red Balls:', predicted_red_balls)
-print('Predicted Blue Ball:', predicted_blue_ball)
+table = Table(title="双色球随机森林预测结果", show_header=True, header_style="bold magenta")
+table.add_column("红球", style="red")
+table.add_column("蓝球", style="blue")
+red_str = " ".join([str(x) for x in predicted_red_balls])
+blue_str = str(predicted_blue_ball)
+table.add_row(red_str, blue_str)
+console.print(table)
+console.print(Panel("[bold green]预测结果已写入 ssq_predictions.txt[/bold green]"))
 
-# 结果覆盖写入到TXT文件
 with open('ssq_predictions.txt', 'w') as f:
     f.write('Predicted Red Balls: ' + ', '.join(map(str, predicted_red_balls)) + '\n')
     f.write('Predicted Blue Ball: ' + str(predicted_blue_ball) + '\n')
