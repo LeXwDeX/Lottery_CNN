@@ -152,24 +152,43 @@ console.print(Panel("预测下一期...", style="cyan"))
 latest_red_feat = get_features(data, len(data), window).reshape(1, -1)
 latest_blue_feat = get_blue_features(data, len(data), window).reshape(1, -1)
 
-predicted_red_balls = []
+# 红球：6个模型概率分布融合，采样6个不重复红球
+red_proba = np.zeros((6, 33))
 for k, model in enumerate(red_models):
-    # 预测概率分布，取概率最大的球号
     proba = model.predict_proba(latest_red_feat)[0]
-    pred = np.argmax(proba) + 1
-    predicted_red_balls.append(pred)
-predicted_red_balls = sorted(set(predicted_red_balls))
-while len(predicted_red_balls) < 6:
-    for i in range(1, 34):
-        if i not in predicted_red_balls:
-            predicted_red_balls.append(i)
-        if len(predicted_red_balls) == 6:
+    if len(proba) < 33:
+        proba_full = np.zeros(33)
+        proba_full[:len(proba)] = proba
+        proba = proba_full
+    red_proba[k] = proba
+red_mean_proba = red_proba.mean(axis=0)
+red_mean_proba = red_mean_proba / red_mean_proba.sum()
+red_candidates = np.arange(1, 34)
+predicted_red_balls = []
+proba_copy = red_mean_proba.copy()
+for _ in range(6):
+    pred = np.random.choice(red_candidates, p=proba_copy/proba_copy.sum())
+    while pred in predicted_red_balls:
+        proba_copy[pred-1] = 0
+        if proba_copy.sum() == 0:
+            remain = [i for i in red_candidates if i not in predicted_red_balls]
+            pred = np.random.choice(remain)
             break
+        pred = np.random.choice(red_candidates, p=proba_copy/proba_copy.sum())
+    predicted_red_balls.append(pred)
+    proba_copy[pred-1] = 0
 predicted_red_balls = sorted(predicted_red_balls)
 
+# 蓝球：概率分布采样1个号码
 blue_proba = blue_model.predict_proba(latest_blue_feat)[0]
-predicted_blue_ball = np.argmax(blue_proba) + 1
-predicted_blue_ball = max(1, min(16, predicted_blue_ball))
+if len(blue_proba) < 16:
+    proba_full = np.zeros(16)
+    proba_full[:len(blue_proba)] = blue_proba
+    blue_proba = proba_full
+blue_proba = blue_proba / blue_proba.sum()
+blue_candidates = np.arange(1, 17)
+predicted_blue_ball = np.random.choice(blue_candidates, p=blue_proba)
+predicted_blue_ball = int(predicted_blue_ball)
 
 # ---------------------------
 # 输出预测结果

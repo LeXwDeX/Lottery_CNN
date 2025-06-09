@@ -1,2 +1,2 @@
-Predicted Red Balls: 1, 7, 9, 21, 29, 32
-Predicted Blue Ball: 6
+Predicted Red Balls: 6, 10, 25, 26, 28, 30
+Predicted Blue Ball: 9

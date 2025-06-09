@@ -150,38 +150,72 @@ for k in range(2):
 console.print("[green]蓝球随机森林全部完成。[/green]")
 
 # ---------------------------
-# 预测下一期
+# 预测下一期（优化版）
 # ---------------------------
 console.print(Panel("预测下一期...", style="cyan"))
 latest_red_feat = get_features(data, len(data), window).reshape(1, -1)
 latest_blue_feat = get_blue_features(data, len(data), window).reshape(1, -1)
 
-predicted_red_balls = []
+# 红球：对每个模型输出概率分布，融合后采样，避免重复，提升多样性
+red_proba = np.zeros((5, 35))
 for k, model in enumerate(red_models):
     proba = model.predict_proba(latest_red_feat)[0]
-    pred = np.argmax(proba) + 1
-    predicted_red_balls.append(pred)
-predicted_red_balls = sorted(set(predicted_red_balls))
-while len(predicted_red_balls) < 5:
-    for i in range(1, 36):
-        if i not in predicted_red_balls:
-            predicted_red_balls.append(i)
-        if len(predicted_red_balls) == 5:
+    # 若某些号码未出现，proba长度可能小于35
+    if len(proba) < 35:
+        proba_full = np.zeros(35)
+        proba_full[:len(proba)] = proba
+        proba = proba_full
+    red_proba[k] = proba
+
+# 融合策略：对5个模型的概率加权平均
+red_mean_proba = red_proba.mean(axis=0)
+# 归一化
+red_mean_proba = red_mean_proba / red_mean_proba.sum()
+
+# 采样5个不重复红球（按概率分布采样，提升多样性）
+red_candidates = np.arange(1, 36)
+predicted_red_balls = []
+proba_copy = red_mean_proba.copy()
+for _ in range(5):
+    pred = np.random.choice(red_candidates, p=proba_copy/proba_copy.sum())
+    while pred in predicted_red_balls:
+        # 若已选过则重新采样
+        proba_copy[pred-1] = 0
+        if proba_copy.sum() == 0:
+            # 若概率全为0则补全
+            remain = [i for i in red_candidates if i not in predicted_red_balls]
+            pred = np.random.choice(remain)
             break
+        pred = np.random.choice(red_candidates, p=proba_copy/proba_copy.sum())
+    predicted_red_balls.append(pred)
+    proba_copy[pred-1] = 0
 predicted_red_balls = sorted(predicted_red_balls)
 
-predicted_blue_balls = []
+# 蓝球：同理，融合概率后采样2个不重复号码
+blue_proba = np.zeros((2, 12))
 for k, model in enumerate(blue_models):
     proba = model.predict_proba(latest_blue_feat)[0]
-    pred = np.argmax(proba) + 1
-    predicted_blue_balls.append(pred)
-predicted_blue_balls = sorted(set(predicted_blue_balls))
-while len(predicted_blue_balls) < 2:
-    for i in range(1, 13):
-        if i not in predicted_blue_balls:
-            predicted_blue_balls.append(i)
-        if len(predicted_blue_balls) == 2:
+    if len(proba) < 12:
+        proba_full = np.zeros(12)
+        proba_full[:len(proba)] = proba
+        proba = proba_full
+    blue_proba[k] = proba
+blue_mean_proba = blue_proba.mean(axis=0)
+blue_mean_proba = blue_mean_proba / blue_mean_proba.sum()
+blue_candidates = np.arange(1, 13)
+predicted_blue_balls = []
+proba_copy = blue_mean_proba.copy()
+for _ in range(2):
+    pred = np.random.choice(blue_candidates, p=proba_copy/proba_copy.sum())
+    while pred in predicted_blue_balls:
+        proba_copy[pred-1] = 0
+        if proba_copy.sum() == 0:
+            remain = [i for i in blue_candidates if i not in predicted_blue_balls]
+            pred = np.random.choice(remain)
             break
+        pred = np.random.choice(blue_candidates, p=proba_copy/proba_copy.sum())
+    predicted_blue_balls.append(pred)
+    proba_copy[pred-1] = 0
 predicted_blue_balls = sorted(predicted_blue_balls)
 
 # ---------------------------
