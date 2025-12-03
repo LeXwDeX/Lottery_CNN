@@ -4,3 +4,5 @@ torch
 tqdm
 openpyxl
 rich
+scikit-learn
+optuna
